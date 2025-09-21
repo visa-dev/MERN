@@ -1,64 +1,113 @@
-const User = require("../models/User");
-const jwt = require("jsonwebtoken");
-const asyncHandler = require("../utils/asyncHandler");
-const AppError = require("../utils/appError");
+const User = require('../models/User');
+const { createSendToken } = require('../middleware/auth');
+const AppError = require('../utils/appError');
+const asyncHandler = require('../utils/asyncHandler');
+const logger = require('../utils/logger');
 
-// 🔑 Helper: Generate JWT
-const signToken = (user) =>
-  jwt.sign(
-    { userId: user._id, email: user.email },
-    process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
-  );
-
-// 📝 Signup
 exports.signup = asyncHandler(async (req, res, next) => {
   const { name, email, password } = req.body;
 
-  if (!name || !email || !password) {
-    return next(new AppError("Name, email & password are required", 400));
+  
+  const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
+  if (existingUser) {
+    return next(new AppError('Email already registered', 409));
   }
 
-  // Check duplicate
-  const exists = await User.findOne({ email: email.toLowerCase().trim() });
-  if (exists) return next(new AppError("Email already registered", 409));
-
-  // Create user (password will be hashed automatically in pre-save hook)
+  
   const user = await User.create({
-    name,
-    email: email.toLowerCase(),
+    name: name.trim(),
+    email: email.toLowerCase().trim(),
     password,
   });
 
-  const token = signToken(user);
-
-  res.status(201).json({
-    success: true,
-    token,
-    user: { id: user._id, name: user.name, email: user.email },
-  });
+  logger.info(`New user registered: ${user.email}`);
+  
+  createSendToken(user, 201, res);
 });
 
-// 🔐 Login
 exports.login = asyncHandler(async (req, res, next) => {
   const { email, password } = req.body;
 
+  
   if (!email || !password) {
-    return next(new AppError("Email & password are required", 400));
+    return next(new AppError('Please provide email and password', 400));
   }
 
-  // Explicitly select password (since it's hidden by default in schema)
-  const user = await User.findOne({ email: email.toLowerCase().trim() }).select("+password");
 
-  if (!user || !(await user.correctPassword(password))) {
-    return next(new AppError("Invalid credentials", 401));
+  const user = await User.findOne({ email: email.toLowerCase().trim() }).select('+password');
+  
+  if (!user || !(await user.correctPassword(password, user.password))) {
+    return next(new AppError('Incorrect email or password', 401));
   }
 
-  const token = signToken(user);
+  
+  user.lastLogin = new Date();
+  await user.save();
 
-  res.json({
+  logger.info(`User logged in: ${user.email}`);
+  
+  createSendToken(user, 200, res);
+});
+
+exports.logout = asyncHandler(async (req, res) => {
+  res.cookie('jwt', 'loggedout', {
+    expires: new Date(Date.now() + 10 * 1000),
+    httpOnly: true,
+  });
+
+  res.status(200).json({
     success: true,
-    token,
-    user: { id: user._id, name: user.name, email: user.email },
+    message: 'Logged out successfully',
+  });
+});
+
+exports.getMe = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user.id);
+  
+  res.status(200).json({
+    success: true,
+    data: {
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        createdAt: user.createdAt,
+        lastLogin: user.lastLogin,
+      },
+    },
+  });
+});
+
+exports.updateMe = asyncHandler(async (req, res, next) => {
+  const { name, email } = req.body;
+  const updatedData = {};
+
+  if (name) updatedData.name = name.trim();
+  if (email) {
+    if (email !== req.user.email) {
+      const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
+      if (existingUser) {
+        return next(new AppError('Email already taken', 409));
+      }
+      updatedData.email = email.toLowerCase().trim();
+    }
+  }
+
+  const user = await User.findByIdAndUpdate(
+    req.user.id,
+    updatedData,
+    { new: true, runValidators: true }
+  );
+
+  res.status(200).json({
+    success: true,
+    data: {
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        createdAt: user.createdAt,
+      },
+    },
   });
 });

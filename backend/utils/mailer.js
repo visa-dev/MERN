@@ -44,7 +44,7 @@ async function sendOrderConfirmation(toEmail, order) {
     subject: `Order Confirmation - ${order._id}`,
     html
   });
-  return nodemailer.getTestMessageUrl(info); // may be null for real SMTP
+  return nodemailer.getTestMessageUrl(info); 
 }
 
 module.exports = { sendOrderConfirmation };
